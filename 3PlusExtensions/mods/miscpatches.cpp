@@ -4,6 +4,7 @@
 #include <Extender/util.h>
 #include "mods.h"
 #include "gamefunctions.h"
+#include <windows.h>
 
 namespace
 {
@@ -30,6 +31,23 @@ namespace
         {"nl", L"^FFFF00^Elite^FFAACC^"},
         {"sv", L"^FFFF00^Elit^FFAACC^"}
     };
+
+    bool profileExists(std::wstring* profileName)
+    {
+        wchar_t* buffer;
+        size_t len;
+        _wdupenv_s(&buffer, &len, L"APPDATA");
+        if (!buffer)
+            return false;
+        std::wstring fullPath(buffer);
+        fullPath.erase(fullPath.find(L"Roaming"));
+        fullPath += L"Local\\PopCap Games\\Bejeweled3\\users\\";
+        fullPath += *profileName;
+        const wchar_t* path = fullPath.c_str();
+        int attribs = GetFileAttributesW(path);
+
+        return (attribs != INVALID_FILE_ATTRIBUTES && (attribs & FILE_ATTRIBUTE_DIRECTORY));
+    }
 }
 
 namespace misc_patches
@@ -186,6 +204,56 @@ namespace misc_patches
             ret;
         }
     }
+
+    NAKEDDEF(CreateProfileOverride)
+    {
+        __asm
+        {
+            //preserve registers
+            push ecx;
+            push ebp;
+            call profileExists;
+            pop ebp;
+            pop ecx;
+            cmp al, 1;
+            jz found;
+
+            //not found, go back to original code
+            mov esi, ecx;
+            cmp[ebp + 14h], edi;
+            push 0x70B1D9;
+            ret;
+            
+        found:
+            push 0x70B1EF;
+            ret;
+        }
+    }
+
+    NAKEDDEF(RenameProfileOverride)
+    {
+        __asm
+        {
+            push ecx;
+            push edi;
+            call profileExists;
+            pop edi;
+            pop ecx;
+            xor edi, edi; //this line must execute in both cases
+            cmp al, 1;
+            jz found;
+
+            shr ecx, 1Fh; //original code
+            add ecx, edx;
+            push 0x763C1F;
+            ret;
+
+        found:
+            push 0x763E1E;
+            ret;
+        }
+    }
+
 } // namespace misc_patches
 
 void initMiscPatches(CodeInjection::FuncInterceptor* hook)
@@ -248,6 +316,10 @@ void initMiscPatches(CodeInjection::FuncInterceptor* hook)
 
     //add enter to confirm dialogs
     inject_jmp(0x75ACE0, reinterpret_cast<void*>(misc_patches::DialogKeyDownOverride));
+
+    //prevent profile clashing with Standard by checking the actual users folder before creating/renaming the profile
+    inject_jmp(0x70B1D4, reinterpret_cast<void*>(misc_patches::CreateProfileOverride));
+    inject_jmp(0x763C18, reinterpret_cast<void*>(misc_patches::RenameProfileOverride));
 
     puts("Misc Patches initialized successfully!");
 }

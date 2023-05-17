@@ -1,3 +1,4 @@
+#define _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING
 #include <Engine.h>
 #include <Extender/util.h>
 #include "../discord/discord.h"
@@ -6,7 +7,9 @@
 #include <memory>
 #include <csignal>
 #include <thread>
+#include <sstream>
 #include "gamefunctions.h"
+#include <codecvt>
 
 namespace {
     volatile bool interrupted{ false };
@@ -24,23 +27,119 @@ namespace {
     };
 } // namespace
 
-static char* formatNumber(int theNumber, char *outBuffer)
+static std::string formatNumber(int theNumber)
 {
-    char tempBuffer[14];
+    std::stringstream output;
+    output.imbue(std::locale("en_US.UTF-8"));
+    output << theNumber;
 
-    if (theNumber > 1000)
+    return output.str();
+}
+
+static bool updateOngoingGameInfo(std::stringstream& detailsText, std::stringstream &stateText,
+    const char** smallImage, const char** smallText, const uintptr_t theBoard)
+{
+    BoardType boardType = GetBoardType(theBoard);
+
+    //board is already constructed when the savegame prompt appears, don't show details in that case
+    if (!GetBoardBackground(theBoard))
+        boardType = UnknownBoard;
+
+    switch (boardType)
     {
-        formatNumber(theNumber / 1000, outBuffer);
-        sprintf_s(tempBuffer, ",%03d", theNumber % 1000);
-        strcat_s(outBuffer, 14, tempBuffer);
-    }
-    else
-    {
-        sprintf_s(tempBuffer, "%d", theNumber);
-        strcpy_s(outBuffer, 4, tempBuffer);
+    case ClassicBoard:
+        detailsText << "Classic: Level " << GetLevel(theBoard);
+        stateText << "Score: " << formatNumber(GetScore(theBoard));
+        *smallImage = "classic_icon";
+        *smallText = "Classic Mode";
+        break;
+    case ZenBoard:
+        detailsText << "Zen: Level " << GetLevel(theBoard);
+        stateText << "Score: " << formatNumber(GetScore(theBoard));
+        *smallImage = "zen_icon";
+        *smallText = "Zen Mode";
+        break;
+    case SpeedBoard:
+        detailsText << "Lightning: x" << GetMultiplier(theBoard) << " multiplier";
+        stateText << "Score: " << formatNumber(GetScore(theBoard));
+        *smallImage = "lightning_icon";
+        *smallText = "Lightning Mode";
+        break;
+    case ButterflyBoard:
+        detailsText << "Butterflies: " << formatNumber(GetReleasedButterflies(theBoard)) << " released";
+        stateText << "Score: " << formatNumber(GetScore(theBoard));
+        *smallImage = "butterflies_icon";
+        *smallText = "Butterflies Mode";
+        break;
+    case PokerBoard:
+        detailsText << "Poker: Hand #" << formatNumber(GetPokerHands(theBoard));
+        stateText << "Score: " << formatNumber(GetScore(theBoard));
+        *smallImage = "poker_icon";
+        *smallText = "Poker Mode";
+        break;
+    case DigBoard:
+        detailsText << "Diamond Mine: " << formatNumber(GetDiamondMineDepth(theBoard)) << "m depth";
+        stateText << "Money: $" << formatNumber(GetDiamondMineMoney(theBoard));
+        *smallImage = "diamondmine_icon";
+        *smallText = "Diamond Mine Mode";
+        break;
+    case InfernoBoard:
+        detailsText << "Ice Storm: x" << GetMultiplier(theBoard) << " multiplier";
+        stateText << "Score: " << formatNumber(GetScore(theBoard));
+        *smallImage = "icestorm_icon";
+        *smallText = "Ice Storm Mode";
+        break;
+    case TimeBombBoard:
+        if (IsRealTimeBomb(theBoard))
+        {
+            detailsText << "Time Bomb: " << formatNumber(GetDefusedBombs(theBoard)) << " defused";
+        }
+        else
+        {
+            detailsText << "Match Bomb: " << formatNumber(GetDefusedBombs(theBoard)) << " defused";
+        }
+        stateText << "Score: " << formatNumber(GetScore(theBoard));
+        *smallImage = "";
+        *smallText = "";
+        break;
+    case RealTimeBombBoard: //I don't know if this one is ever even used
+        detailsText << "Time Bomb: " << formatNumber(GetDefusedBombs(theBoard)) << " defused";
+        stateText << "Score: " << formatNumber(GetScore(theBoard));
+        *smallImage = "";
+        *smallText = "";
+        break;
+        //3+ Extra Modes
+    case FillerBoard:
+        detailsText << "Avalanche: " << formatNumber(GetAmountOfGemsOnBoard(theBoard)) << " gems onscreen";
+        stateText << "Score: " << formatNumber(GetScore(theBoard));
+        *smallImage = "";
+        *smallText = "";
+        break;
+    case BalanceBoard:
+        detailsText << "Balance: " << formatNumber(GetRedBalance(theBoard))
+            << " Red/" << formatNumber(GetBlueBalance(theBoard)) << " Blue gems";
+        stateText << "Offset: " << GetBalance(theBoard);
+        *smallImage = "";
+        *smallText = "";
+        break;
+    case MoveLimitBoard:
+        detailsText << "Stratamax: " << GetMovesLeft(theBoard) << " moves left";
+        stateText << "Score: " << formatNumber(GetScore(theBoard));
+        *smallImage = "";
+        *smallText = "";
+        break;
+    case SandboxBoard:
+        detailsText << "Sandbox";
+        stateText << "Score: " << formatNumber(GetScore(theBoard));
+        *smallImage = "";
+        *smallText = "";
+        break;
+        //if not in game, we are in the menu
+    default:
+        return false;
     }
 
-    return outBuffer;
+    return true;
 }
 
 
@@ -64,154 +163,74 @@ static void discordThread()
     std::signal(SIGINT, [](int) { interrupted = true; });
     std::signal(SIGABRT, [](int) { interrupted = true; });
     std::signal(SIGTERM, [](int) { interrupted = true; });
-    char detailsText[64];
-    char stateText[64];
-    char smallImage[32];
-    char smallText[32];
-    char questName[64];
-    char scoreBuffer[16];
-    char totalTimeBuffer[32];
-    size_t i;
+    
+    const char *smallImage = "";
+    const char *smallText = "";
 
     do {
+        std::stringstream detailsText;
+        std::stringstream stateText;
+
+        uintptr_t theBoard = GetBoard();
+
         if (!GetGApp())
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5000));
-            continue; //we're still loading, don't show presence
+            detailsText << "Loading";
+            stateText << "";
+            smallImage = "";
+            smallText = "";
         }
-        uintptr_t theBoard = GetBoard();
-        BoardType boardType = GetBoardType(theBoard);
-
-        //board is already constructed when the savegame prompt appears, don't show details in that case
-        if (!GetBoardBackground(theBoard))
-            boardType = UnknownBoard; 
-
-        switch (boardType)
+        else if (theBoard)
         {
-        case ClassicBoard:
-            sprintf_s(detailsText, "Classic: Level %d", GetLevel(theBoard));
-            sprintf_s(stateText, "Score: %s", formatNumber(GetScore(theBoard), scoreBuffer));
-            strcpy_s(smallImage, "classic_icon");
-            strcpy_s(smallText, "Classic Mode");
-            break;
-        case ZenBoard:
-            sprintf_s(detailsText, "Zen: Level %d", GetLevel(theBoard));
-            sprintf_s(stateText, "Score: %s", formatNumber(GetScore(theBoard), scoreBuffer));
-            strcpy_s(smallImage, "zen_icon");
-            strcpy_s(smallText, "Zen Mode");
-            break;
-        case SpeedBoard:
-            sprintf_s(detailsText, "Lightning: x%d multiplier", GetMultiplier(theBoard));
-            sprintf_s(stateText, "Score: %s", formatNumber(GetScore(theBoard), scoreBuffer));
-            strcpy_s(smallImage, "lightning_icon");
-            strcpy_s(smallText, "Lightning Mode");
-            break;
-        case ButterflyBoard:
-            sprintf_s(detailsText, "Butterflies: %s released", formatNumber(GetReleasedButterflies(theBoard), scoreBuffer));
-            sprintf_s(stateText, "Score: %s", formatNumber(GetScore(theBoard), scoreBuffer));
-            strcpy_s(smallImage, "butterflies_icon");
-            strcpy_s(smallText, "Butterflies Mode");
-            break;
-        case PokerBoard:
-            sprintf_s(detailsText, "Poker: Hand #%d", GetPokerHands(theBoard));
-            sprintf_s(stateText, "Score: %s", formatNumber(GetScore(theBoard), scoreBuffer));
-            strcpy_s(smallImage, "poker_icon");
-            strcpy_s(smallText, "Poker Mode");
-            break;
-        case DigBoard:
-            sprintf_s(detailsText, "Diamond Mine: %dm depth", GetDiamondMineDepth(theBoard));
-            sprintf_s(stateText, "Money: %s$", formatNumber(GetDiamondMineMoney(theBoard), scoreBuffer));
-            strcpy_s(smallImage, "diamondmine_icon");
-            strcpy_s(smallText, "Diamond Mine Mode");
-            break;
-        case InfernoBoard:
-            sprintf_s(detailsText, "Ice Storm: x%d multiplier", GetMultiplier(theBoard));
-            sprintf_s(stateText, "Score: %s", formatNumber(GetScore(theBoard), scoreBuffer));
-            strcpy_s(smallImage, "icestorm_icon");
-            strcpy_s(smallText, "Ice Storm Mode");
-            break;
-        case TimeBombBoard:
-            if (IsRealTimeBomb(theBoard))
+            if (IsInQuest(theBoard))
             {
-                sprintf_s(detailsText, "Time Bomb: %d defused", GetDefusedBombs(theBoard));
+                std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> convert;
+                auto questTitle = GetQuestTitle(theBoard);
+                detailsText << "Quest: " << convert.to_bytes(*questTitle);
+                stateText << "Goal: " << GetScore(theBoard) << "/" << GetQuestRequirement(theBoard);
+                smallImage = "quest_icon";
+                smallText = "Quest Mode";
             }
             else
             {
-                sprintf_s(detailsText, "Match Bomb: %d defused", GetDefusedBombs(theBoard));
+                updateOngoingGameInfo(detailsText, stateText, &smallImage, &smallText, theBoard);
+                /*auto title = std::wstring(L"CONFLICT");
+                auto text = std::wstring(L"This name matches a profile that already exists on Standard Bejeweled 3. Are you absolutely sure you want to proceed?");
+                auto whereText = std::wstring(L"Proceeding will DELETE your Standard profile PERMANENTLY.");
+                int response = DoDialog(GetGApp(), 0, true, &title, &text, &whereText, 2);
+                int response2 = response;*/
             }
-            sprintf_s(stateText, "Score: %s", formatNumber(GetScore(theBoard), scoreBuffer));
-            strcpy_s(smallImage, "");
-            strcpy_s(smallText, "");
-            break;
-        case RealTimeBombBoard: //I don't know if this one is ever even used
-            sprintf_s(detailsText, "Time Bomb: %d defused", GetDefusedBombs(theBoard));
-            sprintf_s(stateText, "Score: %s", formatNumber(GetScore(theBoard), scoreBuffer));
-            strcpy_s(smallImage, "");
-            strcpy_s(smallText, "");
-            break;
-        //3+ Extra Modes
-        case FillerBoard:
-            sprintf_s(detailsText, "Avalanche: %d gems", GetAmountOfGemsOnBoard(theBoard));
-            sprintf_s(stateText, "Score: %s", formatNumber(GetScore(theBoard), scoreBuffer));
-            strcpy_s(smallImage, "");
-            strcpy_s(smallText, "");
-            break;
-        case BalanceBoard:
-            sprintf_s(detailsText, "Balance: %d Red/%d Blue gems", GetRedBalance(theBoard), GetBlueBalance(theBoard));
-            sprintf_s(stateText, "Offset: %f", GetBalance(theBoard));
-            strcpy_s(smallImage, "");
-            strcpy_s(smallText, "");
-            break;
-        case MoveLimitBoard:
-            sprintf_s(detailsText, "Stratamax: %d moves left", GetMovesLeft(theBoard));
-            sprintf_s(stateText, "Score: %s", formatNumber(GetScore(theBoard), scoreBuffer));
-            strcpy_s(smallImage, "");
-            strcpy_s(smallText, "");
-            break;
-        case SandboxBoard:
-            strcpy_s(detailsText, "Sandbox");
-            sprintf_s(stateText, "Score: %s", formatNumber(GetScore(theBoard), scoreBuffer));
-            strcpy_s(smallImage, "");
-            strcpy_s(smallText, "");
-            break;
-        //if not in game, we are in the menu
-        default:
+        }
+        else
+        {
+            //no board means the player is in the menu, either normal or quest
             if (IsInQuestMenu())
             {
-                strcpy_s(detailsText, "In Quest Menu");
-                strcpy_s(stateText, longQmpNames.find(cfgvalues::questPack)->second); //guaranteed to always have a value
-                strcpy_s(smallImage, "quest_icon");
-                strcpy_s(smallText, "Quest Mode");
+                detailsText << "In Quest Menu";
+                stateText << longQmpNames.find(cfgvalues::questPack)->second; //guaranteed to always have a value
+                smallImage = "quest_icon";
+                smallText = "Quest Mode";
             }
             else
             {
-                strcpy_s(detailsText, "In Main Menu");
-                sprintf_s(stateText, "Total Playtime: %s", GetTotalPlayTime(totalTimeBuffer));
-                strcpy_s(smallImage, "");
-                strcpy_s(smallText, "");
+                detailsText << "In Main Menu";
+                stateText << "Total Playtime: " << GetTotalPlayTime();
+                smallImage = "";
+                smallText = "";
             }
-            break;
-        }
-        if (IsInQuest(theBoard))
-        {
-            wcstombs_s(&i, questName, GetQuestTitle(theBoard)->c_str(), 58);
-            sprintf_s(detailsText, "Quest: %s", questName);
-            sprintf_s(stateText, "Goal: %d/%d", GetScore(theBoard), GetQuestRequirement(theBoard));
-            strcpy_s(smallImage, "quest_icon");
-            strcpy_s(smallText, "Quest Mode");
         }
 
-        activity.SetDetails(detailsText);
-        activity.SetState(stateText);
+        activity.SetDetails(detailsText.str().c_str());
+        activity.SetState(stateText.str().c_str());
         activity.GetAssets().SetSmallImage(smallImage);
         activity.GetAssets().SetSmallText(smallText);
         activity.GetAssets().SetLargeImage("largeimage");
         corePtr->ActivityManager().UpdateActivity(activity, [](discord::Result result) {
-            printf_s("%s updating Discord activity!\n", (result == discord::Result::Ok) ? "Succeeded" : "Failed");
-            });
+            if (result != discord::Result::Ok) printf_s("Failed to update discord activity! (error %d)", static_cast<int>(result));
+        });
         corePtr->RunCallbacks();
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(5000));
+        std::this_thread::sleep_for(std::chrono::milliseconds(2500));
     } while (!interrupted);
 }
 

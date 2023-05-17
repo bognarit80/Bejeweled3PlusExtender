@@ -3,6 +3,7 @@
 #include <Engine.h>
 #include <Extender/util.h>
 #include "mods.h"
+#include "gamefunctions.h"
 
 //default config values
 
@@ -24,6 +25,20 @@ namespace
     //An array of strings passed to the BASS command parser, required to be in wstring format
     const std::wstring musicsArray[] = { L"Classic", L"Zen", L"Speed", L"Speed_lose", L"Poker", L"Butterflies", L"Icestorm", L"BuriedTreasure", L"QuestTimeBased", L"QuestTurnBased", L"QuestBomb", L"LoadingScreen", L"MainMenu", L"QuestMenu", L"QuestMenu_fanfare" };
     std::wstring theSong = L"QuestTurnBased"; //default music for this quest type
+    //Value changes to true when the player enters Sandbox mode, and back to false once dialog has been displayed.
+    bool wantWarningDialog = false;
+
+    void showSpeedWarningDialog()
+    {
+        if (wantWarningDialog && cfgvalues::gameSpeed > 1.1 && !cfgvalues::isFixless)
+        {
+            std::wstring header(L"WARNING");
+            std::wstring warningText(L"GameSpeed is set too high and will probably freeze your game. Use values lower than 1.1 or better, use SpeedFactor to control the speed of the board.");
+            std::wstring okButton(L"OK");
+            DoDialog(GetGApp(), 0, true, &header, &warningText, &okButton, 3);
+        }
+        wantWarningDialog = false;
+    }
 }
 
 namespace sandboxMode 
@@ -129,6 +144,30 @@ namespace sandboxMode
             ret;
         }
     }
+
+    NAKEDDEF(DoNewSandboxGameOverride)
+    {
+        __asm
+        {
+            mov wantWarningDialog, 1;
+
+            push 32B8h; //original line
+            push 0x76586C;
+            ret;
+        }
+    }
+
+    NAKEDDEF(DoNewConfigGameOverride)
+    {
+        __asm
+        {
+            call showSpeedWarningDialog;
+
+            mov ecx, [esp + 0B0h]; //original line
+            push 0x765BAB;
+            ret;
+        }
+    }
 }
 
 void initSandboxModeProps(CodeInjection::FuncInterceptor* hook)
@@ -190,6 +229,9 @@ void initSandboxModeProps(CodeInjection::FuncInterceptor* hook)
         inject_jmp(0x72AA90, reinterpret_cast<void*>(sandboxMode::GameSpeedOverride));
         inject_byte(0x72AA96, 0xC3); //put a ret instruction because our jmp has overriden the existing one
     }
+
+    inject_jmp(0x765867, reinterpret_cast<void*>(sandboxMode::DoNewSandboxGameOverride));
+    inject_jmp(0x765BA4, reinterpret_cast<void*>(sandboxMode::DoNewConfigGameOverride));
     
     if (cfgvalues::wantEliteTechnique) 
     {

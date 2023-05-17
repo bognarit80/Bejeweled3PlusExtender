@@ -111,7 +111,7 @@ int GetQuestId(uintptr_t theBoard);
 bool IsRealTimeBomb(uintptr_t theBoard);
 uintptr_t GetProfile();
 std::wstring GetProfileName();
-char* GetTotalPlayTime(char* buffer);
+std::string GetTotalPlayTime();
 int GetAmountOfGemsOnBoard(uintptr_t theBoard);
 int GetPokerHands(uintptr_t theBoard);
 int GetReleasedButterflies(uintptr_t theBoard);
@@ -126,3 +126,8 @@ int GetArtRes();
 uintptr_t GetCustomBassInterface();
 void PlaySample(int theSoundId, int thePan, double theVolume, double theNumSteps);
 bool IsBoardStill(uintptr_t theBoard);
+//buttonMode: 1 - YES/NO; 2 - OK/CANCEL; 3 - one empty button (takes contents from footer); anything else - none
+inline uintptr_t(__thiscall* DoDialog) (uintptr_t gApp, int theDialogId, bool isModal, const std::wstring* theDialogHeader,
+	const std::wstring* theDialogLines, const std::wstring* theDialogFooter, int theButtonMode)
+	= reinterpret_cast<uintptr_t(__thiscall*) (uintptr_t gApp, int theDialogId, bool isModal, const std::wstring * theDialogHeader,
+	const std::wstring * theDialogLines, const std::wstring * theDialogFooter, int theButtonMode)>(0x469270);

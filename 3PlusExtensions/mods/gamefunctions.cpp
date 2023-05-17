@@ -1,6 +1,8 @@
 #include "gamefunctions.h"
 #include <Engine.h>
 #include <Extender/util.h>
+#include <sstream>
+#include <iomanip>
 
 //General convenience functions for the game that don't apply to gameboard only.
 //Some of them call functions from original code.
@@ -175,24 +177,26 @@ std::wstring GetProfileName()
     return profilePtr != NULL ? *(std::wstring*)(profilePtr + 0x60) : std::wstring();
 }
 
-char* GetTotalPlayTime(char* buffer)
+std::string GetTotalPlayTime()
 {
     uintptr_t profile = GetProfile();
     if (profile == NULL)
-        return new char('\0');
+        return ""; //empty
+
+    std::stringstream ss;
 
     int totalSeconds = *(int*)(profile + 192);
     if (totalSeconds > 3600)
     {
         float totalHours = totalSeconds / 3600.0f;
-        sprintf_s(buffer, 32, "%.1f hours", totalHours);
+        ss << std::setprecision(1) << std::fixed << totalHours << " hours";
     }
     else
     {
-        sprintf_s(buffer, 32, "%d minutes", totalSeconds / 60);
+        ss << (totalSeconds / 60) << " minutes";
     }
 
-    return buffer;
+    return ss.str();
 }
 
 int GetAmountOfGemsOnBoard(uintptr_t theBoard)
